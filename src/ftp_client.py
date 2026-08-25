@@ -4,7 +4,7 @@ import sys
 from typing import Sequence
 import getpass
 from ftplib import FTP
-from jcl2mermaid import preprocess_lines
+from jcl2mermaid import process_diagram
 from dotenv import load_dotenv
 
 
@@ -43,7 +43,8 @@ def run_app(args: argparse.Namespace):
             for line in f:
                 lines.append(line.rstrip('\n'))
 
-    preprocess_lines(lines)
+    process_diagram(lines)
+    return 0
 
     
 
