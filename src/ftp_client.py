@@ -6,7 +6,10 @@ import getpass
 from ftplib import FTP
 from jcl2mermaid import process_diagram
 from dotenv import load_dotenv
+from pathlib import Path
+import logging
 
+logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 
 def parse_args() -> argparse.Namespace:
     load_dotenv()
@@ -15,10 +18,12 @@ def parse_args() -> argparse.Namespace:
         description="a CLI tool that will download your jcl program and create a mermaid diagram from it to visualize the flow of execution",
     )
 
-    parser.add_argument("--downloadmethod",help="Desired method to obtain the jcl. Ex. ftp, ssh, zowe, or local",default=os.getenv("DOWNLOAD_METHOD","ftp"),choices=["ftp","ssh","zowe","local"])
-    parser.add_argument("--jclname",help="Full Name of the jcl you will download. Ex. HLQ.LIB.SRC(JCLSRC)",required=True)
-    parser.add_argument("--username",help="Username for your desired Download Method",default=os.getenv("DOWNLOAD_USERNAME"))
-    parser.add_argument("--hostname",help="Host Name for Download",default=os.getenv("DOWNLOAD_HOSTNAME"))
+    parser.add_argument("--downloadmethod", help="Desired method to obtain the jcl. Ex. ftp, ssh, zowe, or local", default=os.getenv("DOWNLOAD_METHOD", "ftp"), choices=["ftp", "ssh", "zowe", "local"])
+    parser.add_argument("--jclname", help="Full Name of the jcl you will download. Ex. HLQ.LIB.SRC(JCLSRC)", required=True)
+    parser.add_argument("--username", help="Username for your desired Download Method", default=os.getenv("DOWNLOAD_USERNAME"))
+    parser.add_argument("--hostname", help="Host Name for Download", default=os.getenv("DOWNLOAD_HOSTNAME"))
+    parser.add_argument("-o", "--output", help="Output path for the mermaid diagram", default=None) 
+    parser.add_argument("-p", "--print", help="Print the mermaid diagram to the console", action="store_true") 
 
     return parser.parse_args()
 
@@ -28,22 +33,42 @@ def download_via_ftp():
 def run_app(args: argparse.Namespace):
     lines = []
     if args.downloadmethod == "ftp":
+        if not args.hostname:
+            logging.error("Error: Hostname is required for FTP download.")
+            return 1
         password = os.getenv("DOWNLOAD_PASSWORD") or getpass.getpass("Enter Password: ")
+        logging.info(f"Connecting to FTP server at {args.hostname}...")
         with FTP(args.hostname) as ftp:
-            ftp.login(args.username,password)
-            ftp.retrlines(f"RETR '{args.jclname}'",lines.append)
+            ftp.login(args.username, password)
+            logging.info(f"Downloading JCL dataset: {args.jclname}...")
+            ftp.retrlines(f"RETR '{args.jclname}'", lines.append)
+        logging.info("Download complete.")
 
-    elif args.downloadmethod =="ssh":
+    elif args.downloadmethod == "ssh":
         password = os.getenv("DOWNLOAD_PASSWORD") or getpass.getpass("Enter Password: ")
-    elif args.downloadmethod =="zowe":
+    elif args.downloadmethod == "zowe":
         # check for zowe config
         return 0
     elif args.downloadmethod == "local":
-        with open(args.jclname) as f:
+        logging.info(f"Reading local JCL file: {args.jclname}...")
+        with open(args.jclname, "r", encoding="utf-8") as f:
             for line in f:
                 lines.append(line.rstrip('\n'))
 
-    process_diagram(lines)
+    logging.info("Parsing JCL statements...")
+    output_diagram = process_diagram(lines)
+
+    if args.print:
+        print(output_diagram)
+    else:
+        if args.output:
+            output_path = Path(args.output)   
+        else:
+            clean_name = Path(args.jclname).stem.replace("(", "").replace(")", "")
+            output_path = Path.cwd() / f"{clean_name}.mmd"
+        output_path.write_text(output_diagram, encoding="utf-8")
+        logging.info(f"Successfully generated diagram: {output_path}")
+        
     return 0
 
     
@@ -51,6 +76,10 @@ def run_app(args: argparse.Namespace):
 
 def main():
     args = parse_args()
+
+    if args.print:
+        logging.getLogger().setLevel(logging.WARNING)
+
     status = run_app(args)
     sys.exit(status)
 

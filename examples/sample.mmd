@@ -1,0 +1,36 @@
+%%{init: { "flowchart": { "defaultRenderer": "elk", "nodeSpacing": 25, "rankSpacing": 35 } }}%%
+flowchart TD
+  %% Job: JOB00100
+  classDef stepCard fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a,text-align:left;
+  classDef handoffCard fill:#ecfeff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,font-weight:bold;
+  linkStyle default stroke:#64748b,stroke-width:1.5px;
+
+  Step1_STEP010["<b>STEP010</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: IEFBR14 ]</sub><hr/><i>Deletes:</i> <span style='white-space:nowrap; color:red;'><b>DEL01:</b> APP.SAMPLE.SORTED.STAGE</span>, <span style='white-space:nowrap; color:red;'><b>DEL02:</b> APP.SAMPLE.DAILY.REPORT</span>"]:::stepCard
+  Step2_STEP020["<b>STEP020</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: IDCAMS ]</sub><hr/><i>SYSIN:</i> REPRO INFILE(INFILE) OUTFILE(OUTPASS)<br/><i>Reads:</i> <span style='white-space:nowrap;'><b>INFILE:</b> PROD.CUSTOMER.MASTER</span>"]:::stepCard
+  Step3_STEP030["<b>STEP030</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: SORT ]</sub><hr/><i>SYSIN:</i> SORT FIELDS=(1,10,CH,A,25,8,ZD,D)"]:::stepCard
+  Step4_STEP040["<b>STEP040</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: VALD001 ]</sub><br/><sub style='color:#64748b;'>LIB: APP.LOADLIB.PROD</sub><hr/><i>Reads:</i> <span style='white-space:nowrap;'><b>CONFIGDD:</b> PROD.PARMLIB(RULES01)</span>"]:::stepCard
+  Step5_STEP050["<b>STEP050</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: AUDIT01 ]</sub><br/><sub style='color:#64748b;'>LIB: APP.LOADLIB.PROD</sub>"]:::stepCard
+  Step6_STEP060["<b>STEP060</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: IDCAMS ]</sub><hr/><i>SYSIN:</i> REPRO INFILE(INDD) OUTFILE(OUTGDG)"]:::stepCard
+
+  ds___TEMPRAW(["<b>OUTPASS:</b> &&TEMPRAW<br/><sub style='font-weight:normal;'>DISP: (NEW,PASS)</sub>"]):::handoffCard
+  ds_APP_SAMPLE_SORTED_STAGE(["<b>SORTOUT:</b> APP.SAMPLE.SORTED.STAGE<br/><sub style='font-weight:normal;'>DISP: (,CATLG,DELETE)</sub>"]):::handoffCard
+  ds_APP_SAMPLE_DAILY_REPORT(["<b>OUTRPT:</b> APP.SAMPLE.DAILY.REPORT<br/><sub style='font-weight:normal;'>DISP: (NEW,CATLG,DELETE)</sub>"]):::handoffCard
+  ds_APP_SAMPLE_ERROR_LOG__1_(["<b>OUTERR:</b> APP.SAMPLE.ERROR.LOG(+1)<br/><sub style='font-weight:normal;'>DISP: (NEW,CATLG,DELETE)</sub>"]):::handoffCard
+  ds_APP_GLOBAL_AUDIT_LOG(["<b>AUDITLOG:</b> APP.GLOBAL.AUDIT.LOG<br/><sub style='font-weight:normal;'>DISP: MOD</sub>"]):::handoffCard
+  ds_APP_BACKUP_REPORT_GDG__1_(["<b>OUTGDG:</b> APP.BACKUP.REPORT.GDG(+1)<br/><sub style='font-weight:normal;'>DISP: (NEW,CATLG,DELETE)</sub>"]):::handoffCard
+  Step1_STEP010 -.-> Step2_STEP020
+  Step2_STEP020 -.-> Step3_STEP030
+  Step3_STEP030 -.-> Step4_STEP040
+  Step4_STEP040 -.-> Step5_STEP050
+  Step5_STEP050 -.-> Step6_STEP060
+
+  Step2_STEP020 --> ds___TEMPRAW
+  ds___TEMPRAW --> Step3_STEP030
+  Step3_STEP030 --> ds_APP_SAMPLE_SORTED_STAGE
+  ds_APP_SAMPLE_SORTED_STAGE --> Step4_STEP040
+  Step4_STEP040 --> ds_APP_SAMPLE_DAILY_REPORT
+  Step4_STEP040 --> ds_APP_SAMPLE_ERROR_LOG__1_
+  ds_APP_SAMPLE_DAILY_REPORT --> Step5_STEP050
+  Step5_STEP050 --> ds_APP_GLOBAL_AUDIT_LOG
+  ds_APP_SAMPLE_DAILY_REPORT --> Step6_STEP060
+  Step6_STEP060 --> ds_APP_BACKUP_REPORT_GDG__1_

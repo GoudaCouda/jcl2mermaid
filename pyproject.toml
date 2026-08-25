@@ -3,18 +3,20 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "my-cli"
+name = "jcl2Mermaid"
 version = "0.1.0"
 authors = [
-  { name="Your Name", email="you@example.com" },
+  { name="Austin", email="austinboos05@gmail.com" },
 ]
-description = "CLI Tool Description"
+description = "a simple and lightweight cli tool to download and convert a JCL into a Mermaid diagram."
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+  "python-dotenv>=1.0.0"
+]
 
 [project.scripts]
-my-cli = "my_cli.cli:main"
+jcl2mermaid = "ftp_client:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

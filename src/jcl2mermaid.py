@@ -76,7 +76,28 @@ def extract_dataset_info(dd_name: str, params: str) -> tuple[str, str] | None:
     return datasets
         
 
+def is_output_disp(disp):
+    """
+    Checks JCL to see if it is an input or output and returns true for output and false for input
+    """
 
+    
+    clean_disp = re.sub(r"[()]","",disp) 
+    status_disp,normal_disp,abnormal_disp = (clean_disp.split(",") + ["", "", ""])[:3]
+    # set up for if any disp are mising in the statement
+    if not status_disp:
+        status_disp = "NEW"
+    if status_disp == "NEW" and not normal_disp:
+        normal_disp = "DELETE"
+
+    # start checking if its input or output
+    if normal_disp in ("DELETE", "UNCATLG"):
+        if status_disp == "NEW":
+            return "SCRATCH"  # Created and deleted in the same step (e.g. SORTWK)
+        return "DELETE"
+    if status_disp in ("NEW", "MOD"):
+        return "OUTPUT"
+    return "INPUT"
 
 def parse_statements(statements: List[str]) -> JclJob:
     job = JclJob(name="Unknown Job")
@@ -140,9 +161,9 @@ def design_diagram(job: JclJob) -> str:
         '%%{init: { "flowchart": { "defaultRenderer": "elk", "nodeSpacing": 25, "rankSpacing": 35 } }}%%',
         'flowchart TD',
         f'  %% Job: {job.name}',
-        '  classDef stepCard fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a,text-align:left;',
-        '  classDef handoffCard fill:#ecfeff,stroke:#0891b2,stroke-width:1.5px,color:#155e75,font-weight:bold;',
-        '  linkStyle default stroke:#0891b2,stroke-width:1.5px;',
+        '  classDef stepCard fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a,text-align:left;',
+        '  classDef handoffCard fill:#ecfeff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,font-weight:bold;',
+        '  linkStyle default stroke:#64748b,stroke-width:1.5px;',
         ''
     ]
 
@@ -155,6 +176,7 @@ def design_diagram(job: JclJob) -> str:
         step_id = f"Step{step_idx+1}_{sanitize_id(step.name)}"
         step_ids.append(step_id)
         reads = []
+        deletes = []
         sysin_cards = []
 
     # Process DD datasets and determine input/output flow
@@ -174,31 +196,38 @@ def design_diagram(job: JclJob) -> str:
                     continue
                             
                 # Check if it's an output (, implies its new)
-                is_output = (
-                    "NEW" in disp_upper 
-                    or "MOD" in disp_upper 
-                    or disp_upper.startswith("(,") 
-                    or (clean_dsn.startswith("&&") and "PASS" in disp_upper)
-                )
+                filetype = is_output_disp(disp_upper)
+
+
 
                 ds_id = f"ds_{sanitize_id(clean_dsn)}"
                 edge_label_safe = ds.disp.replace('"', "'") if ds.disp else ""
                 edge_label_str = f'|"{edge_label_safe}"|' if edge_label_safe else ""
 
-                if is_output:
+                if filetype == "OUTPUT":
                     disp_part = f"<br/><sub style='font-weight:normal;'>DISP: {edge_label_safe}</sub>" if edge_label_safe else ""
                     handoff_nodes[ds_id] = f"<b>{dd.name}:</b> {clean_dsn}{disp_part}"
-                    data_edges.append(f"  {step_id} --> {ds_id}")             
+                    data_edges.append(f"  {step_id} --> {ds_id}")  
+                elif ds_id in handoff_nodes:
+                    # An earlier step created this file -> Draw pipeline handoff arrow
+                    # (This catches &&TEMPRAW in Step 3 cleanly without cluttering the step box)
+                    data_edges.append(f"  {ds_id} --> {step_id}")
+                elif filetype == "DELETE":
+                    # Standalone cleanup step (e.g. IEFBR14 in Step 1)
+                    prefix = f"<b>{dd.name}:</b> " if dd.name else ""
+                    deletes.append(f"<span style='white-space:nowrap; color:red;'>{prefix}{clean_dsn}</span>")
+
+                elif filetype == "SCRATCH":
+                    # Intra-step scratch file (SORTWK, etc.) -> Ignore completely
+                    pass
+
                 else:
-                    if ds_id in handoff_nodes:
-                        # Inter-step handoff link
-                        data_edges.append(f"  {ds_id} --> {step_id}")
-                    else:
-                        # Static/read-only lookup -> Keep inline to save space
-                        prefix = f"<b>{dd.name}:</b> " if dd.name else ""
-                        reads.append(f"<span style='white-space:nowrap;'>{prefix}{clean_dsn}</span>")
+                    # Static/read-only lookup -> Keep inline
+                    prefix = f"<b>{dd.name}:</b> " if dd.name else ""
+                    reads.append(f"<span style='white-space:nowrap;'>{prefix}{clean_dsn}</span>")
         
-        label_parts = [f"<b>{step.name}</b><br/><code>PGM: {step.program}</code>"]
+
+        label_parts = [f"<b>{step.name}</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: {step.program} ]</sub>"]
 
 
         details = []
@@ -209,6 +238,8 @@ def design_diagram(job: JclJob) -> str:
             details.append(f"<i>SYSIN:</i> {', '.join(sysin_cards)}")
         if reads:
             details.append(f"<i>Reads:</i> {',\n'.join(reads)}")
+        if deletes:
+            details.append(f"<i>Deletes:</i> {', '.join(deletes)}")
         if details:
             label_parts.append("<hr/>" + "<br/>".join(details))
 
@@ -240,8 +271,8 @@ def process_diagram(lines: Sequence[str]) -> str:
     logical_statements = preprocess_lines(lines)
     jclJob = parse_statements(logical_statements)
     output_diagram = design_diagram(jclJob)
-    with open('mermaid.mmd','w') as file:
-        file.write(output_diagram)
+    
+    return output_diagram
 
 
 if __name__ == "__main__":
