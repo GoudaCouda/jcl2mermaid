@@ -11,7 +11,7 @@ def preprocess_lines(lines: Sequence[str]) -> str:
 
         is_new_statement = len(clean_line) > 2 and clean_line.startswith("//") and clean_line[2] != ' '
 
-        if clean_line.startswith("//*"):
+        if clean_line.startswith(("//*","/*")):
             continue
         if is_new_statement:
             if current_statement:
@@ -34,32 +34,47 @@ def extract_dataset_info(dd_name: str, params: str) -> tuple[str, str] | None:
     """
     Extracts (dsn_or_type, disp) from DD parameters.
     """
+    datasets = []
     params_upper = params.upper().strip()
     
     # In-stream Data (//SYSIN DD * or DD DATA)
     if params_upper.startswith("*") or params_upper.startswith("DATA"):
-        return ("IN-STREAM DATA", "INPUT")
+        params_clean = params.strip()
+        params_upper = params_clean.upper()
+
+        cmd_text = re.sub(r"^(\*|DATA)\s*", "", params_clean, flags=re.IGNORECASE).strip()
+        if cmd_text:
+            return [Dataset(dsn="IN-STREAM DATA", disp="INPUT",content=cmd_text)]
+        return []
+
         
     #  (//SYSIN DD DUMMY or DSN=NULLFILE)
     if params_upper.startswith("DUMMY") or "DSN=NULLFILE" in params_upper:
-        return None
+        return []
 
         
     # //SYSPRINT DD SYSOUT=*
     sysout_match = re.search(r"SYSOUT=([^,\s]+)", params, re.IGNORECASE)
     if sysout_match:
-        # not going to capture it for now
+        #not gonna get these for now
         #return (f"SYSOUT({sysout_match.group(1)})", "OUTPUT")
-        return None
+        return []
     # 4. Standard DSN
-    dsn_match = re.search(r"(?:DSN|DSNAME)=([^,\s]+)", params, re.IGNORECASE)
-    disp_match = re.search(r"DISP=(\([^)]+\)|[^,\s]+)", params, re.IGNORECASE)    
-    if dsn_match:
-        dsn = dsn_match.group(1).strip("'\"")
-        disp = disp_match.group(1) if disp_match else "SHR"
-        return (dsn, disp)
+
+    # Split on whitespace + 'DD ' to isolate each concatenated dataset segment
+    segments = re.split(r"\s+DD\s+", params.strip(), flags=re.IGNORECASE)
+    
+    for segment in segments:
+        if not segment.strip():
+            continue
+        dsn_match = re.search(r"(?:DSN|DSNAME)=([^,\s]+)", segment, re.IGNORECASE)
+        disp_match = re.search(r"DISP=(\([^)]+\)|[^,\s]+)", segment, re.IGNORECASE)   
+        if dsn_match:
+            dsn = dsn_match.group(1).strip("'\"")
+            disp = disp_match.group(1) if disp_match else "SHR"
+            datasets.append(Dataset(dsn=dsn, disp=disp))
+    return datasets
         
-    return None
 
 
 
@@ -93,18 +108,24 @@ def parse_statements(statements: List[str]) -> JclJob:
             
     
             # Skip standard diagnostic print logs to keep diagrams readable
-            if label.upper() in ["SYSOUT", "SYSPRINT", "SYSUDUMP", "CEEDUMP"]:
+            #if label.upper() in [ "SYSPRINT", "SYSUDUMP", "CEEDUMP"]:
+            #    continue
+
+            parsed_datasets = extract_dataset_info(label, params)
+            if not parsed_datasets:
+                continue
+            if label.upper() == "STEPLIB" and current_step is not None:
+                current_step.steplib.extend([d.dsn for d in parsed_datasets if d.dsn])
                 continue
 
-            info = extract_dataset_info(label, params)
-            if not info:
+            if label.upper() == "JOBLIB":
+                job.joblib.extend([d.dsn for d in parsed_datasets if d.dsn])
                 continue
-
-            dsn, disp = info
+        
             dd_stmt = DDStatement(
                 name=label,
                 raw_block=stmt,
-                datasets=[Dataset(dsn=dsn, disp=disp)]
+                datasets=parsed_datasets
             )
             # if not none it means its concantinated with other dd's
             if current_step is not None:
@@ -115,58 +136,102 @@ def parse_statements(statements: List[str]) -> JclJob:
     return job
 
 def design_diagram(job: JclJob) -> str:
-    mermaid_lines = ["flowchart TD"]    
-    mermaid_lines.append(f"  %% Job: {job.name}")
+    mermaid_lines = [
+        '%%{init: { "flowchart": { "defaultRenderer": "elk", "nodeSpacing": 25, "rankSpacing": 35 } }}%%',
+        'flowchart TD',
+        f'  %% Job: {job.name}',
+        '  classDef stepCard fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a,text-align:left;',
+        '  classDef handoffCard fill:#ecfeff,stroke:#0891b2,stroke-width:1.5px,color:#155e75,font-weight:bold;',
+        '  linkStyle default stroke:#0891b2,stroke-width:1.5px;',
+        ''
+    ]
 
+    handoff_nodes = {}
     step_sequence_edges = []
-
+    data_edges = []
+    step_ids = []
     for step_idx,step in enumerate(job.steps):
+        step_num = f"{step_idx + 1:02d}"
         step_id = f"Step{step_idx+1}_{sanitize_id(step.name)}"
-        mermaid_lines.append(f"subgraph sub_{step_id} [Step:{step.name}]")
-        mermaid_lines.append(f'    {step_id}["<b>{step.name}</b><br/>PGM: {step.program}"]')
-
+        step_ids.append(step_id)
+        reads = []
+        sysin_cards = []
 
     # Process DD datasets and determine input/output flow
         for dd in step.dds:
             for ds in dd.datasets:
+                disp_upper = (ds.disp or "").upper()
+                raw_dsn = ds.dsn or ""
+                clean_dsn = raw_dsn.replace('"', '').replace("'", "")
 
-                if ds.dsn == "IN-STREAM DATA":
-                    ds_id = f"ds_SYSIN_{step_id}"
-                    ds_label = f'{ds_id}[("<b>{dd.name}</b><br/>IN-STREAM DATA")]'
-                else:
-                    ds_id = f"ds_{sanitize_id(ds.dsn)}_{step_id}"
-                    ds_label = f'{ds_id}[("<b>{dd.name}</b><br/>{ds.dsn}")]'
-                
-                disp_upper = ds.disp.upper()
-                
+
+                if clean_dsn == "IN-STREAM DATA" or dd.name.upper() == "SYSIN":
+                    card_text = getattr(ds, "content", "").strip()
+                    if card_text:
+                        sysin_cards.append(card_text)
+                    continue
+                if not clean_dsn:
+                    continue
+                            
                 # Check if it's an output (, implies its new)
                 is_output = (
                     "NEW" in disp_upper 
                     or "MOD" in disp_upper 
                     or disp_upper.startswith("(,") 
-                    or disp_upper == ""
+                    or (clean_dsn.startswith("&&") and "PASS" in disp_upper)
                 )
 
+                ds_id = f"ds_{sanitize_id(clean_dsn)}"
+                edge_label_safe = ds.disp.replace('"', "'") if ds.disp else ""
+                edge_label_str = f'|"{edge_label_safe}"|' if edge_label_safe else ""
 
-                edge_label_safe = ds.disp.replace('"', "'")
                 if is_output:
-                    # Step writes to Dataset
-                    mermaid_lines.append(f'  {step_id} -->|"{edge_label_safe}"| {ds_label}')                
+                    disp_part = f"<br/><sub style='font-weight:normal;'>DISP: {edge_label_safe}</sub>" if edge_label_safe else ""
+                    handoff_nodes[ds_id] = f"<b>{dd.name}:</b> {clean_dsn}{disp_part}"
+                    data_edges.append(f"  {step_id} --> {ds_id}")             
                 else:
-                    # Input dataset Dataset feeds into Step
-                    mermaid_lines.append(f'  {ds_label} -->|"{edge_label_safe}"| {step_id}')
+                    if ds_id in handoff_nodes:
+                        # Inter-step handoff link
+                        data_edges.append(f"  {ds_id} --> {step_id}")
+                    else:
+                        # Static/read-only lookup -> Keep inline to save space
+                        prefix = f"<b>{dd.name}:</b> " if dd.name else ""
+                        reads.append(f"<span style='white-space:nowrap;'>{prefix}{clean_dsn}</span>")
         
-        mermaid_lines.append('  end')  
+        label_parts = [f"<b>{step.name}</b><br/><code>PGM: {step.program}</code>"]
 
-        if step_idx < len(job.steps) - 1:             
-            next_step = job.steps[step_idx + 1]
-            next_step_id = f"Step{step_idx+2}_{sanitize_id(next_step.name)}"
-            step_sequence_edges.append(f"  {step_id} ==> {next_step_id}")
-    # Append all dataset <-> step connection lines
-    if step_sequence_edges:
+
+        details = []
+        if step.steplib:
+            lib_display = ", ".join(step.steplib)
+            label_parts.append(f"<br/><sub style='color:#64748b;'>LIB: {lib_display}</sub>")
+        if sysin_cards:
+            details.append(f"<i>SYSIN:</i> {', '.join(sysin_cards)}")
+        if reads:
+            details.append(f"<i>Reads:</i> {',\n'.join(reads)}")
+        if details:
+            label_parts.append("<hr/>" + "<br/>".join(details))
+
+        step_label = "".join(label_parts)
+        mermaid_lines.append(f'  {step_id}["{step_label}"]:::stepCard') 
+
+    if handoff_nodes:
         mermaid_lines.append("")
-        mermaid_lines.extend(step_sequence_edges)
-    print("\n".join(mermaid_lines))
+        for ds_id, dsn in handoff_nodes.items():
+            mermaid_lines.append(f'  {ds_id}(["{dsn}"]):::handoffCard')
+
+
+    # Append all dataset <-> step connection lines
+    if len(step_ids) > 1:
+        for idx in range(len(step_ids) - 1):
+            mermaid_lines.append(f"  {step_ids[idx]} -.-> {step_ids[idx+1]}")
+
+    # 3. Append dataset dataflow connections
+    if data_edges:
+        mermaid_lines.append("")
+        mermaid_lines.extend(data_edges)
+
+        
     return "\n".join(mermaid_lines)
     
 
