@@ -22,8 +22,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jclname", help="Full Name of the jcl you will download. Ex. HLQ.LIB.SRC(JCLSRC)", required=True)
     parser.add_argument("--username", help="Username for your desired Download Method", default=os.getenv("DOWNLOAD_USERNAME"))
     parser.add_argument("--hostname", help="Host Name for Download", default=os.getenv("DOWNLOAD_HOSTNAME"))
-    parser.add_argument("-o", "--output", help="Output path for the mermaid diagram", default=None) 
-    parser.add_argument("-p", "--print", help="Print the mermaid diagram to the console", action="store_true") 
+    parser.add_argument("--designtype", "--format", "-t", dest="designtype", help="Diagram design type / format (mermaid, d2, graphviz)", default=os.getenv("DESIGN_TYPE", "mermaid"), choices=["mermaid", "d2", "graphviz", "dot", "mmd"])
+    parser.add_argument("-o", "--output", help="Output path for the generated diagram", default=None) 
+    parser.add_argument("-p", "--print", help="Print the diagram to the console", action="store_true") 
     parser.add_argument("-c","--include-comments",help="If you wish to include comments in the graph output",action="store_true")
 
     return parser.parse_args()
@@ -57,16 +58,21 @@ def run_app(args: argparse.Namespace):
                 lines.append(line.rstrip('\n'))
 
     logging.info("Parsing JCL statements...")
-    output_diagram = process_diagram(lines,args)
+    output_diagram = process_diagram(lines, args)
 
     if args.print:
         print(output_diagram)
     else:
+        designtype = getattr(args, "designtype", "mermaid").lower()
+        ext_map = {"d2": "d2", "graphviz": "dot", "dot": "dot", "mermaid": "mmd", "mmd": "mmd"}
+        ext = ext_map.get(designtype, "mmd")
         if args.output:
-            output_path = Path(args.output)   
+            output_path = Path(args.output)
+            if not output_path.suffix:
+                output_path = output_path.with_suffix(f".{ext}")
         else:
             clean_name = Path(args.jclname).stem.replace("(", "").replace(")", "")
-            output_path = Path.cwd() / f"{clean_name}.mmd"
+            output_path = Path.cwd() / f"{clean_name}.{ext}"
         output_path.write_text(output_diagram, encoding="utf-8")
         logging.info(f"Successfully generated diagram: {output_path}")
         
