@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hostname", help="Host Name for Download", default=os.getenv("DOWNLOAD_HOSTNAME"))
     parser.add_argument("-o", "--output", help="Output path for the mermaid diagram", default=None) 
     parser.add_argument("-p", "--print", help="Print the mermaid diagram to the console", action="store_true") 
+    parser.add_argument("-c","--include-comments",help="If you wish to include comments in the graph output",action="store_true")
 
     return parser.parse_args()
 
@@ -56,7 +57,7 @@ def run_app(args: argparse.Namespace):
                 lines.append(line.rstrip('\n'))
 
     logging.info("Parsing JCL statements...")
-    output_diagram = process_diagram(lines)
+    output_diagram = process_diagram(lines,args)
 
     if args.print:
         print(output_diagram)

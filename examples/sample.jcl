@@ -13,10 +13,9 @@
 //*
 //* ===================================================================
 //* STEP 2: EXTRACT DATA & CREATE TEMPORARY PASSED FILE (PGM: IDCAMS)
-//* Tests: DISP=SHR (Inline Read), In-stream SYSIN, DISP=(NEW,PASS)
 //* ===================================================================
 //STEP020  EXEC PGM=IDCAMS
-//INFILE   DD DSN=PROD.CUSTOMER.MASTER,DISP=SHR
+//INFILE   DD DSN=PROD.CUSTOMER.MASTER(+1),DISP=SHR
 //OUTPASS  DD DSN=&&TEMPRAW,
 //            DISP=(NEW,PASS),
 //            UNIT=SYSDA,
@@ -47,7 +46,7 @@
 //* STEP 4: BUSINESS VALIDATION (PGM: VALD001)
 //* Tests: STEPLIB, Read from prior step, GDG(+1) creation, NEW,CATLG
 //* ===================================================================
-//STEP040  EXEC PGM=VALD001
+//STEP040  EXEC PGM=NATBATCH,PARM="SYS=888"
 //STEPLIB  DD DSN=APP.LOADLIB.PROD,DISP=SHR
 //INPUTDD  DD DSN=APP.SAMPLE.SORTED.STAGE,DISP=SHR
 //CONFIGDD DD DSN=PROD.PARMLIB(RULES01),DISP=SHR
@@ -60,6 +59,13 @@
 //            UNIT=SYSDA,
 //            SPACE=(TRK,(5,2))
 //SYSOUT   DD SYSOUT=*
+//CMSYNIN DD *
+LIBRAR,LIBRAR
+%*
+NATPROG
+NATPROG
+FIN
+/*
 //*
 //* ===================================================================
 //* STEP 5: AUDIT LOGGING (PGM: AUDIT01)

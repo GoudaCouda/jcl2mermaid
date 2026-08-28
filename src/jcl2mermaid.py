@@ -1,28 +1,36 @@
-from typing import Sequence,List
+from typing import Optional, Sequence,List
 import re
 from models import JclJob, JclStep, DDStatement, Dataset
 
 
-def preprocess_lines(lines: Sequence[str]) -> str:
-    logical_statements = []
-    current_statement = ""
+def preprocess_lines(lines: Sequence[str],args) -> List[str]:
+    logical_statements: List[str] = []
+
     for line in lines:
-        clean_line = line.rstrip()
-
-        is_new_statement = len(clean_line) > 2 and clean_line.startswith("//") and clean_line[2] != ' '
-
-        if clean_line.startswith(("//*","/*")):
+        clean = line.rstrip()
+        if not clean or clean.startswith("/*"):
             continue
-        if is_new_statement:
-            if current_statement:
-                logical_statements.append(current_statement)
-            current_statement = clean_line
-        else:
-            current_statement += " " + clean_line.lstrip("/ ")
-    if current_statement:
-        logical_statements.append(current_statement)
-    return logical_statements
 
+        if clean.startswith("//*"):
+            if args.include_comments:
+            # Check that the comment contains at least one alphabetic character
+            # (Filters out lines like '//*', '//* ====', '//* --------', '//* 123456')
+                if re.search(r"[a-zA-Z]", clean[3:]):
+                    logical_statements.append(clean)
+            continue
+
+        # If it's a continuation (starts with '// '), attach to the last non-comment statement
+        if clean.startswith("// "):
+            for idx in range(len(logical_statements) - 1, -1, -1):
+                if not logical_statements[idx].startswith("//*"):
+                    logical_statements[idx] += " " + clean[3:].strip()
+                    break
+            continue
+
+        # New statement / SYSIN data card
+        logical_statements.append(clean)
+
+    return logical_statements
 
 def sanitize_id(text: str) -> str:
     # Replaces all non-alphanumeric characters (spaces, dots, +, -, parens) with underscores
@@ -36,16 +44,6 @@ def extract_dataset_info(dd_name: str, params: str) -> tuple[str, str] | None:
     """
     datasets = []
     params_upper = params.upper().strip()
-    
-    # In-stream Data (//SYSIN DD * or DD DATA)
-    if params_upper.startswith("*") or params_upper.startswith("DATA"):
-        params_clean = params.strip()
-        params_upper = params_clean.upper()
-
-        cmd_text = re.sub(r"^(\*|DATA)\s*", "", params_clean, flags=re.IGNORECASE).strip()
-        if cmd_text:
-            return [Dataset(dsn="IN-STREAM DATA", disp="INPUT",content=cmd_text)]
-        return []
 
         
     #  (//SYSIN DD DUMMY or DSN=NULLFILE)
@@ -59,6 +57,7 @@ def extract_dataset_info(dd_name: str, params: str) -> tuple[str, str] | None:
         #not gonna get these for now
         #return (f"SYSOUT({sysout_match.group(1)})", "OUTPUT")
         return []
+    
     # 4. Standard DSN
 
     # Split on whitespace + 'DD ' to isolate each concatenated dataset segment
@@ -99,21 +98,45 @@ def is_output_disp(disp):
         return "OUTPUT"
     return "INPUT"
 
-def parse_statements(statements: List[str]) -> JclJob:
+def parse_statements(statements: List[str],args) -> JclJob:
     job = JclJob(name="Unknown Job")
     current_step: JclStep | None = None
-
+    pending_comments: List[str] = []
+    current_dd: Optional[DDStatement] = None
     for stmt in statements:
+
+
+        # 1. Handle Comments
+        if stmt.startswith("//*"):
+            if args.include_comments:
+                pending_comments.append(stmt[3:].strip())
+            continue
+
+        if stmt.startswith("/*"):
+            # Close the active in-stream DD payload
+            current_dd = None
+            continue
+
+        if not stmt.startswith("//"):
+            if current_dd is not None:
+                current_dd.cards.append(stmt.strip())
+            continue
+
+
         # matching jcl structure to our dataclass
         # matches 3 patterns //LABEL OPERATION PARAMS 
         match = re.match(r"^//([A-Z0-9#@$]+)?\s+([A-Z]+)\s*(.*)$", stmt, re.IGNORECASE)
+
         if not match:
             continue
+
         label,operation,params = match.groups()
         label = label or ""
         operation = operation.upper()
         if operation == "JOB":
             job.name = label
+            job.comments.extend(pending_comments)
+            pending_comments.clear()
         elif operation == "EXEC":
             # Extract program name (PGM=xxx) or procedure name (PROC=xxx or direct name)
             pgm_match = re.search(r"(?:PGM|PROC)=([A-Z0-9#@$]+)", params, re.IGNORECASE)
@@ -122,39 +145,67 @@ def parse_statements(statements: List[str]) -> JclJob:
 
 
             current_step=JclStep(name=label, program=program_name)
+            current_step.comments.extend(pending_comments)
+            pending_comments.clear()
             job.steps.append(current_step)
 
         elif operation == "DD":
             # Extract DSN and DISP 
-            
+            if pending_comments:
+                if current_step is not None:
+                    current_step.comments.extend(pending_comments)
+                else:
+                    job.comments.extend(pending_comments)
+                pending_comments.clear()
     
-            # Skip standard diagnostic print logs to keep diagrams readable
-            #if label.upper() in [ "SYSPRINT", "SYSUDUMP", "CEEDUMP"]:
-            #    continue
 
-            parsed_datasets = extract_dataset_info(label, params)
-            if not parsed_datasets:
-                continue
+            
+            parsed_datasets = extract_dataset_info(label, params) or []
+
             if label.upper() == "STEPLIB" and current_step is not None:
                 current_step.steplib.extend([d.dsn for d in parsed_datasets if d.dsn])
+                current_dd = None
                 continue
 
             if label.upper() == "JOBLIB":
                 job.joblib.extend([d.dsn for d in parsed_datasets if d.dsn])
+                current_dd = None
                 continue
-        
+
+            
             dd_stmt = DDStatement(
-                name=label,
-                raw_block=stmt,
-                datasets=parsed_datasets
+                name=label, raw_block=stmt, datasets=parsed_datasets
             )
-            # if not none it means its concantinated with other dd's
+
             if current_step is not None:
                 current_step.dds.append(dd_stmt)
             else:
-                # Save as a global/job-level DD. most likely in the form of a job lib statement
                 job.global_dds.append(dd_stmt)
+
+            # Set as active DD so subsequent non-'//' card lines append here
+            current_dd = dd_stmt
+
+    if pending_comments:
+        if current_step:
+            current_step.comments.extend(pending_comments)
+        else:
+            job.comments.extend(pending_comments)
     return job
+
+
+
+def format_cards(cards: list[str]) -> str:
+    cleaned = [c.strip() for c in cards if c.strip()]
+    if not cleaned:
+        return ""
+
+    # If all lines are very short (e.g., 1-2 words / <= 20 chars), join inline with spaces
+    if len(cleaned) <= 6 and all(len(line) <= 20 for line in cleaned):
+        return " ".join(cleaned)
+
+    # Otherwise preserve multiline structure
+    return "".join(cleaned)
+
 
 def design_diagram(job: JclJob) -> str:
     mermaid_lines = [
@@ -185,13 +236,6 @@ def design_diagram(job: JclJob) -> str:
                 disp_upper = (ds.disp or "").upper()
                 raw_dsn = ds.dsn or ""
                 clean_dsn = raw_dsn.replace('"', '').replace("'", "")
-
-
-                if clean_dsn == "IN-STREAM DATA" or dd.name.upper() == "SYSIN":
-                    card_text = getattr(ds, "content", "").strip()
-                    if card_text:
-                        sysin_cards.append(card_text)
-                    continue
                 if not clean_dsn:
                     continue
                             
@@ -224,26 +268,47 @@ def design_diagram(job: JclJob) -> str:
                 else:
                     # Static/read-only lookup -> Keep inline
                     prefix = f"<b>{dd.name}:</b> " if dd.name else ""
-                    reads.append(f"<span style='white-space:nowrap;'>{prefix}{clean_dsn}</span>")
+                    reads.append(f"<span style='white-space:nowrap; font-size:11px;'>{prefix}{clean_dsn}</span>")
         
 
         label_parts = [f"<b>{step.name}</b><br/><sub style='color:#4338ca !important; fill:#4338ca !important; font-weight:bold; font-size:12px;'>[ PGM: {step.program} ]</sub>"]
 
 
         details = []
+
+        instream_cards = [
+            f"<font color='#0284c7'><b>{dd.name.upper()}:</b></font><br/>"
+            f"<tt style='font-size:11px; line-height:1.15; display:block;'>{format_cards(dd.cards)}</tt>"
+            for dd in step.dds
+            if getattr(dd, "cards", None) and any(c.strip() for c in dd.cards)
+        ]
+        if instream_cards:
+            # Inserts all in-stream DD blocks (SYSIN, SORTCNTL, etc.) directly into details
+            details.extend(instream_cards)
+
         if step.steplib:
             lib_display = ", ".join(step.steplib)
             label_parts.append(f"<br/><sub style='color:#64748b;'>LIB: {lib_display}</sub>")
-        if sysin_cards:
-            details.append(f"<i>SYSIN:</i> {', '.join(sysin_cards)}")
         if reads:
-            details.append(f"<i>Reads:</i> {',\n'.join(reads)}")
+            details.append(f"<font color='#059669'><b>External Input:</b></font><br/>{('<br/>').join(reads)}")
         if deletes:
-            details.append(f"<i>Deletes:</i> {', '.join(deletes)}")
+            details.append(f"<font color='#dc2626'><b>Deletes:</b></font><br/>{('<br/>').join(deletes)}")
         if details:
-            label_parts.append("<hr/>" + "<br/>".join(details))
+            label_parts.append("<hr/>" + "".join(details))
+        if step.comments:
+            label_parts.append("<hr/>")
+            clean_comments = [
+                f"• {c.lstrip('/*=- ').strip().replace('\"', '\'').replace('[', '(').replace(']', ')')}"
+                for c in step.comments
+                if c.strip()
+            ]
+            if clean_comments:
+                comments_text = "<br/>".join(clean_comments)
+                label_parts.append(
+                    f"<div align='left'><font color='#64748b' size='1'><i>{comments_text}</i></font></div>"
+                )
 
-        step_label = "".join(label_parts)
+        step_label = f"<div align='left'>{''.join(label_parts)}</div>"
         mermaid_lines.append(f'  {step_id}["{step_label}"]:::stepCard') 
 
     if handoff_nodes:
@@ -267,9 +332,9 @@ def design_diagram(job: JclJob) -> str:
     
 
 
-def process_diagram(lines: Sequence[str]) -> str:
-    logical_statements = preprocess_lines(lines)
-    jclJob = parse_statements(logical_statements)
+def process_diagram(lines: Sequence[str],args) -> str:
+    logical_statements = preprocess_lines(lines,args)
+    jclJob = parse_statements(logical_statements,args)
     output_diagram = design_diagram(jclJob)
     
     return output_diagram

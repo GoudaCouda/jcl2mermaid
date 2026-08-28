@@ -13,6 +13,9 @@ class DDStatement:
     name: str
     raw_block: str
     datasets: List[Dataset] = field(default_factory=list)
+    cards: List[str] = field(
+        default_factory=list
+    )  # In-stream payload (SYSIN cards, control statements)
 
 @dataclass
 class JclStep:
@@ -20,6 +23,7 @@ class JclStep:
     program: str
     steplib: List[str] = field(default_factory=list)
     dds:List[DDStatement] = field(default_factory=list)
+    comments: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -28,3 +32,4 @@ class JclJob:
     joblib: List[str] = field(default_factory=list)
     global_dds: List[DDStatement] = field(default_factory=list)
     steps: List[JclStep] = field(default_factory=list)
+    comments: List[str] = field(default_factory=list)

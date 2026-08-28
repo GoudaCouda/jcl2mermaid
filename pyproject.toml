@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 jcl2mermaid = "ftp_client:main"
+jcl2mermaid-ui = "web_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
