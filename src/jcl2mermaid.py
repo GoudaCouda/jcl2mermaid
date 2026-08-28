@@ -207,13 +207,13 @@ def format_cards(cards: list[str]) -> str:
     return "".join(cleaned)
 
 
-def design_diagram(job: JclJob) -> str:
+def design_mermaid(job: JclJob) -> str:
     mermaid_lines = [
         '%%{init: { "flowchart": { "defaultRenderer": "elk", "nodeSpacing": 25, "rankSpacing": 35 } }}%%',
         'flowchart TD',
         f'  %% Job: {job.name}',
         '  classDef stepCard fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a,text-align:left;',
-        '  classDef handoffCard fill:#ecfeff,stroke:#0284c7,stroke-width:1.5px,color:#0369a1,font-weight:bold;',
+        '  classDef handoffCard fill:#ecfdf5,stroke:#059669,stroke-dasharray: 0,stroke-width:1.5px,color:#064e3b,font-size:12px;',
         '  linkStyle default stroke:#64748b,stroke-width:1.5px;',
         ''
     ]
@@ -329,13 +329,191 @@ def design_diagram(job: JclJob) -> str:
 
         
     return "\n".join(mermaid_lines)
+
+
+def escape_dot_text(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def design_graphviz(job: JclJob) -> str:
+    dot_lines = [
+        f'// Job: {job.name}',
+        'digraph JCL_Flow {',
+        '  graph [',
+        '    rankdir=TB,',
+        '    bgcolor="transparent",',
+        '    nodesep=0.4,',
+        '    ranksep=0.6,',
+        '    pad=0.3,',
+        '    fontname="Segoe UI, -apple-system, Helvetica, Arial, sans-serif"',
+        '  ];',
+        '  node [',
+        '    fontname="Segoe UI, -apple-system, Helvetica, Arial, sans-serif",',
+        '    fontsize=10,',
+        '    shape=none,',
+        '    margin=0',
+        '  ];',
+        '  edge [',
+        '    fontname="Segoe UI, -apple-system, Helvetica, Arial, sans-serif",',
+        '    fontsize=9,',
+        '    color="#64748b",',
+        '    penwidth=1.5',
+        '  ];',
+        ''
+    ]
+
+    handoff_nodes = {}
+    data_edges = []
+    step_ids = []
+
+    for step_idx, step in enumerate(job.steps):
+        step_id = f"Step{step_idx+1}_{sanitize_id(step.name)}"
+        step_ids.append(step_id)
+        reads = []
+        deletes = []
+
+        # Process DD datasets and determine input/output flow
+        for dd in step.dds:
+            for ds in dd.datasets:
+                disp_upper = (ds.disp or "").upper()
+                raw_dsn = ds.dsn or ""
+                clean_dsn = raw_dsn.replace('"', '').replace("'", "")
+                if not clean_dsn:
+                    continue
+
+                filetype = is_output_disp(disp_upper)
+                ds_id = f"ds_{sanitize_id(clean_dsn)}"
+                edge_label_safe = ds.disp.replace('"', "'") if ds.disp else ""
+
+                if filetype == "OUTPUT":
+                    handoff_nodes[ds_id] = (escape_dot_text(dd.name), escape_dot_text(clean_dsn), escape_dot_text(edge_label_safe))
+                    data_edges.append(f"  {step_id} -> {ds_id};")
+                elif ds_id in handoff_nodes:
+                    data_edges.append(f"  {ds_id} -> {step_id};")
+                elif filetype == "DELETE":
+                    prefix = f"<B>{escape_dot_text(dd.name)}:</B> " if dd.name else ""
+                    deletes.append(f"{prefix}{escape_dot_text(clean_dsn)}")
+                elif filetype == "SCRATCH":
+                    pass
+                else:
+                    prefix = f"<B>{escape_dot_text(dd.name)}:</B> " if dd.name else ""
+                    reads.append(f"{prefix}{escape_dot_text(clean_dsn)}")
+
+        # Build Step Card HTML Table
+        table_rows = []
+        
+        # Header: Step name + Program name
+        escaped_step_name = escape_dot_text(step.name)
+        escaped_pgm = escape_dot_text(step.program)
+        table_rows.append(
+            f'<TR><TD ALIGN="LEFT"><B><FONT COLOR="#0f172a" POINT-SIZE="12">{escaped_step_name}</FONT></B></TD></TR>'
+        )
+        table_rows.append(
+            f'<TR><TD ALIGN="LEFT"><B><FONT COLOR="#4338ca" POINT-SIZE="9">[ PGM: {escaped_pgm} ]</FONT></B></TD></TR>'
+        )
+
+        if step.steplib:
+            lib_display = escape_dot_text(", ".join(step.steplib))
+            table_rows.append(
+                f'<TR><TD ALIGN="LEFT"><FONT COLOR="#64748b" POINT-SIZE="9">LIB: {lib_display}</FONT></TD></TR>'
+            )
+
+        # In-stream DD cards (SYSIN, etc.)
+        instream_cards = [
+            (escape_dot_text(dd.name.upper()), escape_dot_text(format_cards(dd.cards)))
+            for dd in step.dds
+            if getattr(dd, "cards", None) and any(c.strip() for c in dd.cards)
+        ]
+
+        has_details = instream_cards or reads or deletes
+
+        if has_details:
+            table_rows.append('<HR/>')
+
+        for dd_name_esc, card_content in instream_cards:
+            table_rows.append(
+                f'<TR><TD ALIGN="LEFT"><B><FONT COLOR="#0284c7" POINT-SIZE="9">{dd_name_esc}:</FONT></B></TD></TR>'
+            )
+            table_rows.append(
+                f'<TR><TD ALIGN="LEFT"><FONT FACE="Courier New, monospace" POINT-SIZE="8" COLOR="#334155">{card_content}</FONT></TD></TR>'
+            )
+
+        if reads:
+            table_rows.append(
+                '<TR><TD ALIGN="LEFT"><B><FONT COLOR="#059669" POINT-SIZE="9">External Input:</FONT></B></TD></TR>'
+            )
+            for r in reads:
+                table_rows.append(
+                    f'<TR><TD ALIGN="LEFT"><FONT POINT-SIZE="8" COLOR="#334155">{r}</FONT></TD></TR>'
+                )
+
+        if deletes:
+            table_rows.append(
+                '<TR><TD ALIGN="LEFT"><B><FONT COLOR="#dc2626" POINT-SIZE="9">Deletes:</FONT></B></TD></TR>'
+            )
+            for d in deletes:
+                table_rows.append(
+                    f'<TR><TD ALIGN="LEFT"><FONT POINT-SIZE="8" COLOR="#dc2626">{d}</FONT></TD></TR>'
+                )
+
+        if step.comments:
+            clean_comments = [
+                escape_dot_text(c.lstrip('/*=- ').strip().replace('"', '\'').replace('[', '(').replace(']', ')'))
+                for c in step.comments
+                if c.strip()
+            ]
+            if clean_comments:
+                table_rows.append('<HR/>')
+                for c in clean_comments:
+                    table_rows.append(
+                        f'<TR><TD ALIGN="LEFT"><I><FONT POINT-SIZE="8" COLOR="#64748b">&#8226; {c}</FONT></I></TD></TR>'
+                    )
+
+        table_content = "\n        ".join(table_rows)
+        dot_lines.append(f'  {step_id} [label=<\n    <TABLE BORDER="1" COLOR="#64748b" CELLBORDER="0" CELLSPACING="0" CELLPADDING="7" BGCOLOR="#f8fafc" STYLE="ROUNDED">\n        {table_content}\n    </TABLE>\n  >];\n')
+
+    # Handoff nodes
+    if handoff_nodes:
+        for ds_id, (dd_name_esc, clean_dsn_esc, disp_esc) in handoff_nodes.items():
+            disp_row = f'\n        <TR><TD ALIGN="CENTER"><FONT POINT-SIZE="8" COLOR="#059669">DISP: {disp_esc}</FONT></TD></TR>' if disp_esc else ""
+            dot_lines.append(
+                f'  {ds_id} [label=<\n'
+                f'    <TABLE BORDER="1" COLOR="#059669" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6" BGCOLOR="#ecfdf5" STYLE="ROUNDED">\n'
+                f'        <TR><TD ALIGN="CENTER"><B><FONT POINT-SIZE="9" COLOR="#064e3b">{dd_name_esc}: {clean_dsn_esc}</FONT></B></TD></TR>{disp_row}\n'
+                f'    </TABLE>\n'
+                f'  >];'
+            )
+        dot_lines.append('')
+
+    # Step sequence connections (dashed)
+    if len(step_ids) > 1:
+        for idx in range(len(step_ids) - 1):
+            dot_lines.append(f'  {step_ids[idx]} -> {step_ids[idx+1]} [style=dashed, color="#64748b"];')
+        dot_lines.append('')
+
+    # Data flow connections
+    if data_edges:
+        dot_lines.extend(data_edges)
+        dot_lines.append('')
+
+    dot_lines.append('}')
+    return "\n".join(dot_lines)
+
+
+def process_diagram(lines: Sequence[str], args) -> str:
+    logical_statements = preprocess_lines(lines, args)
+    jclJob = parse_statements(logical_statements, args)
     
-
-
-def process_diagram(lines: Sequence[str],args) -> str:
-    logical_statements = preprocess_lines(lines,args)
-    jclJob = parse_statements(logical_statements,args)
-    output_diagram = design_diagram(jclJob)
+    designtype = str(getattr(args, "designtype", None) or getattr(args, "format", "mermaid")).lower()
+    if designtype in ["graphviz", "dot"]:
+        output_diagram = design_graphviz(jclJob)
+    else:
+        output_diagram = design_mermaid(jclJob)
     
     return output_diagram
 

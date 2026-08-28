@@ -1,5 +1,6 @@
 import argparse
 import os
+import subprocess
 import sys
 from typing import Sequence
 import getpass
@@ -22,10 +23,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jclname", help="Full Name of the jcl you will download. Ex. HLQ.LIB.SRC(JCLSRC)", required=True)
     parser.add_argument("--username", help="Username for your desired Download Method", default=os.getenv("DOWNLOAD_USERNAME"))
     parser.add_argument("--hostname", help="Host Name for Download", default=os.getenv("DOWNLOAD_HOSTNAME"))
-    parser.add_argument("-o", "--output", help="Output path for the mermaid diagram", default=None) 
-    parser.add_argument("-p", "--print", help="Print the mermaid diagram to the console", action="store_true") 
+    parser.add_argument("--designtype", "--format", "-t", dest="designtype", help="Diagram design type / format (mermaid, graphviz)", default=os.getenv("DESIGN_TYPE", "mermaid"), choices=["mermaid", "graphviz", "dot", "mmd"])
+    parser.add_argument("-o", "--output", help="Output path for the generated diagram", default=None) 
+    parser.add_argument("-p", "--print", help="Print the diagram to the console", action="store_true") 
     parser.add_argument("-c","--include-comments",help="If you wish to include comments in the graph output",action="store_true")
-
+    parser.add_argument("-r","--render",help="If you want to render right to an SVG or PNG; Only Supported for Graphviz",type=str.lower,choices=("png","svg"),default=None)
     return parser.parse_args()
 
 def download_via_ftp():
@@ -57,18 +59,35 @@ def run_app(args: argparse.Namespace):
                 lines.append(line.rstrip('\n'))
 
     logging.info("Parsing JCL statements...")
-    output_diagram = process_diagram(lines,args)
+    output_diagram = process_diagram(lines, args)
 
     if args.print:
         print(output_diagram)
     else:
+        designtype = getattr(args, "designtype", "mermaid").lower()
+        ext_map = {"graphviz": "dot", "dot": "dot", "mermaid": "mmd", "mmd": "mmd"}
+        ext = ext_map.get(designtype, "mmd")
         if args.output:
-            output_path = Path(args.output)   
+            output_path = Path(args.output)
+            if not output_path.suffix:
+                output_path = output_path.with_suffix(f".{ext}")
         else:
             clean_name = Path(args.jclname).stem.replace("(", "").replace(")", "")
-            output_path = Path.cwd() / f"{clean_name}.mmd"
-        output_path.write_text(output_diagram, encoding="utf-8")
-        logging.info(f"Successfully generated diagram: {output_path}")
+            output_path = Path.cwd() / f"{clean_name}.{ext}"       
+        if args.render and args.designtype in ("graphviz","dot"):
+            render_type = args.render.lower()
+            output_path = output_path.with_suffix(f".{render_type}")
+            subprocess.run(
+                ["dot",f"-T{render_type}","-o",f"{output_path}"],
+                input=output_diagram,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            logging.info(f"Successfully generated diagram: {output_path}")
+        else:
+            output_path.write_text(output_diagram, encoding="utf-8")
+            logging.info(f"Successfully generated diagram: {output_path}")
         
     return 0
 
